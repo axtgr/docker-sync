@@ -14,15 +14,11 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "docker-sync",
+	Use:   "docker-sync <source> <destination>",
 	Short: "Sync files with a remote Docker container",
 	Long:  `Watch a local directory and sync it with a remote Docker container using docker cp.`,
+	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) < 2 || args[0] == "" || args[1] == "" {
-			fmt.Println("Usage: docker-sync <source> <destination>")
-			os.Exit(1)
-		}
-
 		absoluteSourcePath, err := filepath.Abs(args[0])
 
 		if err != nil {
