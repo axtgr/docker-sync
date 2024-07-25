@@ -37,6 +37,12 @@ var rootCmd = &cobra.Command{
 		destinationContainer := destinationSegments[0]
 		destinationPath := destinationSegments[1]
 
+		restart, err := cmd.Flags().GetBool("restart")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+
 		fmt.Printf("Syncing %s to %s\n", absoluteSourcePath, destination)
 
 		fw, err := filewatcher.NewFileWatcher()
@@ -60,6 +66,17 @@ var rootCmd = &cobra.Command{
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainer, destinationPath)
 						fmt.Fprintln(os.Stderr, err)
+						return
+					}
+
+					if restart {
+						fmt.Printf("Restarting container %s\n", destinationContainer)
+						err := restartContainer(destinationContainer)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while restarting container %s\n", destinationContainer)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
 					}
 				}
 			case err := <-fw.Errors:
@@ -71,6 +88,17 @@ var rootCmd = &cobra.Command{
 
 func copyToContainer(sourcePath string, container string, containerPath string) error {
 	cmd := exec.Command("docker", "cp", sourcePath, container+":"+containerPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return errors.New(stderr.String())
+	}
+	return nil
+}
+
+func restartContainer(container string) error {
+	cmd := exec.Command("docker", "restart", container)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()
