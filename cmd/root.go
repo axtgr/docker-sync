@@ -1,11 +1,8 @@
 package cmd
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -34,7 +31,7 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		destinationContainer := destinationSegments[0]
+		destinationContainerOrService := destinationSegments[0]
 		destinationPath := destinationSegments[1]
 
 		restart, err := cmd.Flags().GetBool("restart")
@@ -62,18 +59,51 @@ var rootCmd = &cobra.Command{
 			select {
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
-					err := copyToContainer(event.Name, destinationContainer, destinationPath)
+					service, err := FindService(destinationContainerOrService)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainer, destinationPath)
+						fmt.Fprintf(os.Stderr, "Error while finding service %s\n", destinationContainerOrService)
 						fmt.Fprintln(os.Stderr, err)
 						return
 					}
 
-					if restart {
-						fmt.Printf("Restarting container %s\n", destinationContainer)
-						err := restartContainer(destinationContainer)
+					var container string
+
+					if service == "" {
+						container, err = FindContainer(destinationContainerOrService)
 						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while restarting container %s\n", destinationContainer)
+							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+					} else {
+						container, err = GetContainerIdForService(destinationContainerOrService)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while getting container ID for service %s\n", destinationContainerOrService)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+					}
+
+					err = CopyToContainer(event.Name, container, destinationPath)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainerOrService, destinationPath)
+						fmt.Fprintln(os.Stderr, err)
+						return
+					}
+
+					if restart && service != "" {
+						fmt.Printf("Restarting service %s\n", destinationContainerOrService)
+						err := RestartService(service)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while restarting service %s\n", destinationContainerOrService)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+					} else {
+						fmt.Printf("Restarting container %s\n", destinationContainerOrService)
+						err := RestartContainer(container)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while restarting container %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
@@ -86,28 +116,6 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func copyToContainer(sourcePath string, container string, containerPath string) error {
-	cmd := exec.Command("docker", "cp", sourcePath, container+":"+containerPath)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		return errors.New(stderr.String())
-	}
-	return nil
-}
-
-func restartContainer(container string) error {
-	cmd := exec.Command("docker", "restart", container)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		return errors.New(stderr.String())
-	}
-	return nil
-}
-
 // Adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
@@ -118,5 +126,5 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.Flags().BoolP("restart", "r", false, "Restart container after syncing")
+	rootCmd.Flags().BoolP("restart", "r", false, "Restart container/service after syncing")
 }
