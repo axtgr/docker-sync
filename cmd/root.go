@@ -12,8 +12,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "docker-sync <source> <destination>",
-	Short: "Sync files with a remote Docker container",
-	Long:  `Watch a local directory and sync it with a remote Docker container using docker cp.`,
+	Short: "Sync files with a remote Docker container/service",
+	Long:  "Watch a local directory and sync it with a remote Docker container or service using `docker cp`",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		absoluteSourcePath, err := filepath.Abs(args[0])
@@ -40,7 +40,23 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Printf("Syncing %s to %s\n", absoluteSourcePath, destination)
+		service, err := FindService(destinationContainerOrService)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error while finding service %s\n", destinationContainerOrService)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		var tempContainer string
+		var volume string
+
+		if restart && service != "" {
+			tempContainer, volume, err = CreateTemporaryContainerWithVolume()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				os.Exit(1)
+			}
+		}
 
 		fw, err := filewatcher.NewFileWatcher()
 		if err != nil {
@@ -55,55 +71,86 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		fmt.Printf("Syncing %s to %s\n", absoluteSourcePath, destination)
+
 		for {
 			select {
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
-					service, err := FindService(destinationContainerOrService)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error while finding service %s\n", destinationContainerOrService)
-						fmt.Fprintln(os.Stderr, err)
-						return
-					}
-
-					var container string
-
-					if service == "" {
-						container, err = FindContainer(destinationContainerOrService)
+					if service == "" && !restart {
+						container, err := FindContainer(destinationContainerOrService)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
-					} else {
-						container, err = GetContainerIdForService(destinationContainerOrService)
+
+						err = CopyToContainer(event.Name, container, destinationPath)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, container, destinationPath)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+
+						return
+					}
+
+					if service == "" && restart {
+						container, err := FindContainer(destinationContainerOrService)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+
+						err = CopyToContainer(event.Name, container, destinationPath)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, container, destinationPath)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+
+						fmt.Printf("Restarting container %s\n", container)
+						err = RestartContainer(container, "")
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while restarting %s\n", container)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+
+						return
+					}
+
+					if service != "" && !restart {
+						container, err := GetContainerIdForService(destinationContainerOrService)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while getting container ID for service %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
-					}
 
-					err = CopyToContainer(event.Name, container, destinationPath)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainerOrService, destinationPath)
-						fmt.Fprintln(os.Stderr, err)
-						return
-					}
-
-					if restart && service != "" {
-						fmt.Printf("Restarting service %s\n", destinationContainerOrService)
-						err := RestartService(service)
+						err = CopyToContainer(event.Name, container, destinationPath)
 						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while restarting service %s\n", destinationContainerOrService)
+							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainerOrService, destinationPath)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
-					} else {
-						fmt.Printf("Restarting container %s\n", destinationContainerOrService)
-						err := RestartContainer(container)
+
+						return
+					}
+
+					if service != "" && restart {
+						err = CopyToContainer(event.Name, tempContainer, TemporaryContainerMountPath)
 						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while restarting container %s\n", destinationContainerOrService)
+							fmt.Fprintf(os.Stderr, "Error while copying %s to temporary container %s:%s\n", event.Name, tempContainer, TemporaryContainerMountPath)
+							fmt.Fprintln(os.Stderr, err)
+							return
+						}
+
+						fmt.Printf("Restarting service %s\n", destinationContainerOrService)
+						err := RestartService(service, "type=volume,source="+volume+",destination="+destinationPath)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error while restarting service %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
@@ -126,5 +173,5 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.Flags().BoolP("restart", "r", false, "Restart container/service after syncing")
+	rootCmd.Flags().BoolP("restart", "r", false, "Restart container/service on changes")
 }

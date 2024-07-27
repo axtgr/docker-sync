@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -151,19 +150,33 @@ func GetContainerIdForService(service string) (string, error) {
 	return container, nil
 }
 
-func RestartContainer(container string) error {
-	cmd := exec.Command("docker", "restart", container)
+func RestartContainer(container string, mount string) error {
+	var command *exec.Cmd
+
+	if mount == "" {
+		command = exec.Command("docker", "restart", container)
+	} else {
+		command = exec.Command("docker", "restart", "--volume", mount, container)
+	}
+
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	command.Stderr = &stderr
+	err := command.Run()
 	if err != nil {
 		return errors.New(stderr.String())
 	}
 	return nil
 }
 
-func RestartService(service string) error {
-	command := exec.Command("docker", "service", "update", "--force", service)
+func RestartService(service string, mount string) error {
+	var command *exec.Cmd
+
+	if mount == "" {
+		command = exec.Command("docker", "service", "update", "--force", service)
+	} else {
+		command = exec.Command("docker", "service", "update", "--force", "--mount-add", mount, service)
+	}
+
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	err := command.Run()
@@ -174,8 +187,6 @@ func RestartService(service string) error {
 }
 
 func CopyToContainer(sourcePath string, container string, containerPath string) error {
-	fmt.Println(container)
-
 	cmd := exec.Command("docker", "cp", sourcePath, container+":"+containerPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -184,4 +195,34 @@ func CopyToContainer(sourcePath string, container string, containerPath string) 
 		return errors.New(stderr.String())
 	}
 	return nil
+}
+
+func CreateVolume() (string, error) {
+	command := exec.Command("docker", "volume", "create")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil {
+		return "", errors.New(stderr.String())
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+var TemporaryContainerMountPath = "/docker-sync-data"
+
+func CreateTemporaryContainerWithVolume() (string, string, error) {
+	volume, err := CreateVolume()
+	if err != nil {
+		return "", "", err
+	}
+
+	command := exec.Command("docker", "create", "--quiet", "--rm", "--volume", volume+":"+TemporaryContainerMountPath, "hello-world")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil {
+		return "", "", errors.New(stderr.String())
+	}
+	container := strings.TrimSpace(string(output))
+	return container, volume, nil
 }
