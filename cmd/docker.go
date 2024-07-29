@@ -150,15 +150,8 @@ func GetContainerIdForService(service string) (string, error) {
 	return container, nil
 }
 
-func RestartContainer(container string, mount string) error {
-	var command *exec.Cmd
-
-	if mount == "" {
-		command = exec.Command("docker", "restart", container)
-	} else {
-		command = exec.Command("docker", "restart", "--volume", mount, container)
-	}
-
+func RestartContainer(container string) error {
+	command := exec.Command("docker", "restart", container)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	err := command.Run()

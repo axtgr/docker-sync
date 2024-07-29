@@ -111,7 +111,7 @@ var rootCmd = &cobra.Command{
 						}
 
 						fmt.Printf("Restarting container %s\n", container)
-						err = RestartContainer(container, "")
+						err = RestartContainer(container)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while restarting %s\n", container)
 							fmt.Fprintln(os.Stderr, err)
