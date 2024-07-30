@@ -40,7 +40,19 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		service, err := FindService(destinationContainerOrService)
+		dockerHost, err := cmd.Flags().GetString("host")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+
+		docker, err := NewDockerManager(dockerHost)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+
+		service, err := docker.FindService(destinationContainerOrService)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error while finding service %s\n", destinationContainerOrService)
 			fmt.Fprintln(os.Stderr, err)
@@ -51,7 +63,7 @@ var rootCmd = &cobra.Command{
 		var volume string
 
 		if restart && service != "" {
-			tempContainer, volume, err = CreateTemporaryContainerWithVolume()
+			tempContainer, volume, err = docker.CreateTemporaryContainerWithVolume()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)
 				os.Exit(1)
@@ -78,14 +90,14 @@ var rootCmd = &cobra.Command{
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
 					if service == "" && !restart {
-						container, err := FindContainer(destinationContainerOrService)
+						container, err := docker.FindContainer(destinationContainerOrService)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
 
-						err = CopyToContainer(event.Name, container, destinationPath)
+						err = docker.CopyToContainer(event.Name, container, destinationPath)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, container, destinationPath)
 							fmt.Fprintln(os.Stderr, err)
@@ -96,14 +108,14 @@ var rootCmd = &cobra.Command{
 					}
 
 					if service == "" && restart {
-						container, err := FindContainer(destinationContainerOrService)
+						container, err := docker.FindContainer(destinationContainerOrService)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
 
-						err = CopyToContainer(event.Name, container, destinationPath)
+						err = docker.CopyToContainer(event.Name, container, destinationPath)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, container, destinationPath)
 							fmt.Fprintln(os.Stderr, err)
@@ -111,7 +123,7 @@ var rootCmd = &cobra.Command{
 						}
 
 						fmt.Printf("Restarting container %s\n", container)
-						err = RestartContainer(container)
+						err = docker.RestartContainer(container)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while restarting %s\n", container)
 							fmt.Fprintln(os.Stderr, err)
@@ -122,14 +134,14 @@ var rootCmd = &cobra.Command{
 					}
 
 					if service != "" && !restart {
-						container, err := GetContainerIdForService(destinationContainerOrService)
+						container, err := docker.GetContainerIdForService(destinationContainerOrService)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while getting container ID for service %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
 							return
 						}
 
-						err = CopyToContainer(event.Name, container, destinationPath)
+						err = docker.CopyToContainer(event.Name, container, destinationPath)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainerOrService, destinationPath)
 							fmt.Fprintln(os.Stderr, err)
@@ -140,7 +152,7 @@ var rootCmd = &cobra.Command{
 					}
 
 					if service != "" && restart {
-						err = CopyToContainer(event.Name, tempContainer, TemporaryContainerMountPath)
+						err = docker.CopyToContainer(event.Name, tempContainer, TemporaryContainerMountPath)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while copying %s to temporary container %s:%s\n", event.Name, tempContainer, TemporaryContainerMountPath)
 							fmt.Fprintln(os.Stderr, err)
@@ -148,7 +160,7 @@ var rootCmd = &cobra.Command{
 						}
 
 						fmt.Printf("Restarting service %s\n", destinationContainerOrService)
-						err := RestartService(service, "type=volume,source="+volume+",destination="+destinationPath)
+						err := docker.RestartService(service, volume, destinationPath)
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error while restarting service %s\n", destinationContainerOrService)
 							fmt.Fprintln(os.Stderr, err)
@@ -174,4 +186,5 @@ func Execute() {
 
 func init() {
 	rootCmd.Flags().BoolP("restart", "r", false, "Restart container/service on changes")
+	rootCmd.Flags().StringP("host", "H", "", "Docker host to use")
 }
