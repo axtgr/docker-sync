@@ -18,7 +18,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
@@ -35,14 +34,8 @@ func makeTemporaryName() string {
 	return AppIdentifier + "-" + uuid.New().String()
 }
 
-func isTemporaryVolumeMounted(spec *swarm.ServiceSpec) bool {
-	for _, mount := range spec.TaskTemplate.ContainerSpec.Mounts {
-		// Would be better to check for the label, but service specs don't include them
-		if strings.HasPrefix(mount.Source, AppIdentifier) {
-			return true
-		}
-	}
-	return false
+func isTemporaryVolume(mount *mount.Mount) bool {
+	return strings.HasPrefix(mount.Source, AppIdentifier)
 }
 
 type DockerManager struct {
@@ -244,13 +237,19 @@ func (dm *DockerManager) RestartService(service string, mountSource string, moun
 	spec := serviceInfo.Spec
 	spec.TaskTemplate.ForceUpdate++
 
-	if mountSource != "" && !isTemporaryVolumeMounted(&spec) {
+	if mountSource != "" {
 		newMount := mount.Mount{
 			Type:   mount.TypeVolume,
 			Source: mountSource,
 			Target: mountTarget,
 		}
-		spec.TaskTemplate.ContainerSpec.Mounts = append(spec.TaskTemplate.ContainerSpec.Mounts, newMount)
+		mounts := []mount.Mount{}
+		for _, mount := range spec.TaskTemplate.ContainerSpec.Mounts {
+			if !isTemporaryVolume(&mount) {
+				mounts = append(mounts, mount)
+			}
+		}
+		spec.TaskTemplate.ContainerSpec.Mounts = append(mounts, newMount)
 	}
 
 	_, err = dm.client.ServiceUpdate(context.Background(), service, serviceInfo.Version, spec, types.ServiceUpdateOptions{})
@@ -261,37 +260,65 @@ func (dm *DockerManager) CopyToContainer(sourcePath, container, containerPath st
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
-	err := filepath.Walk(sourcePath, func(file string, fi os.FileInfo, err error) error {
+	sourcePath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to stat source: %w", err)
+	}
+
+	addToArchive := func(path string, info os.FileInfo, headerPath string) error {
+		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to create tar header: %w", err)
 		}
 
-		header, err := tar.FileInfoHeader(fi, file)
-		if err != nil {
-			return err
-		}
-
-		relPath, err := filepath.Rel(sourcePath, file)
-		if err != nil {
-			return err
-		}
-		header.Name = filepath.Join(containerPath, relPath)
+		header.Name = headerPath
 
 		if err := tw.WriteHeader(header); err != nil {
-			return err
+			return fmt.Errorf("failed to write tar header: %w", err)
 		}
 
-		if !fi.IsDir() {
-			data, err := os.Open(file)
+		if !info.IsDir() {
+			file, err := os.Open(path)
+			if err != nil {
+				return fmt.Errorf("failed to open file: %w", err)
+			}
+			defer file.Close()
+
+			if _, err := io.Copy(tw, file); err != nil {
+				return fmt.Errorf("failed to copy file contents: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	if sourceInfo.IsDir() {
+		err = filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(tw, data); err != nil {
-				return err
+
+			relPath, err := filepath.Rel(sourcePath, path)
+			if err != nil {
+				return fmt.Errorf("failed to get relative path: %w", err)
 			}
-		}
-		return nil
-	})
+
+			headerPath := filepath.Join(containerPath, relPath)
+			headerPath = filepath.ToSlash(headerPath)
+
+			return addToArchive(path, info, headerPath)
+		})
+	} else {
+		headerPath := filepath.Join(containerPath, sourceInfo.Name())
+		headerPath = filepath.ToSlash(headerPath)
+
+		err = addToArchive(sourcePath, sourceInfo, headerPath)
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to create tar archive: %w", err)
