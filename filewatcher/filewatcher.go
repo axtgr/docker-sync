@@ -17,6 +17,8 @@ type FileWatcher struct {
 	done    chan bool
 }
 
+type Op = fsnotify.Op
+
 const (
 	Create = fsnotify.Create
 	Write  = fsnotify.Write

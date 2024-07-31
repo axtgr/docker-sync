@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -33,7 +35,7 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		destinationContainerOrService := destinationSegments[0]
+		destinationTarget := destinationSegments[0]
 		destinationPath := destinationSegments[1]
 
 		restart, err := cmd.Flags().GetBool("restart")
@@ -48,39 +50,62 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		docker, err := NewDockerManager(dockerHost)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
-			os.Exit(1)
-		}
-		defer docker.Cleanup()
-
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-		go func() {
-			<-c
-			docker.Cleanup()
-			os.Exit(0)
-		}()
-
-		service, err := docker.FindService(destinationContainerOrService)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error while finding service %s\n", destinationContainerOrService)
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-
-		var tempContainer string
-		var volume string
-
-		if restart && service != "" {
-			tempContainer, volume, err = docker.CreateTemporaryContainerWithVolume()
+		if dockerHost == "" {
+			cmd := exec.Command("docker", "context", "inspect")
+			output, err := cmd.Output()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err)
 				os.Exit(1)
 			}
+
+			var contextInfo []struct {
+				Name      string `json:"Name"`
+				Endpoints struct {
+					Docker struct {
+						Host string `json:"Host"`
+					} `json:"docker"`
+				} `json:"Endpoints"`
+			}
+			if err := json.Unmarshal(output, &contextInfo); err != nil {
+				err = fmt.Errorf("failed to parse Docker context: %w", err)
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				os.Exit(1)
+				return
+			}
+
+			if len(contextInfo) == 0 {
+				fmt.Fprintln(os.Stderr, "Error: no Docker context found")
+				os.Exit(1)
+			}
+
+			dockerHost = contextInfo[0].Endpoints.Docker.Host
 		}
+
+		dockerSyncer, err := NewDockerSyncer(destinationTarget, destinationPath, restart, dockerHost)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		err = dockerSyncer.Connect()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		err = dockerSyncer.Init()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		defer dockerSyncer.Cleanup()
+
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+
+		go func() {
+			<-signals
+			dockerSyncer.Cleanup()
+			os.Exit(0)
+		}()
 
 		fw, err := filewatcher.NewFileWatcher()
 		if err != nil {
@@ -101,83 +126,9 @@ var rootCmd = &cobra.Command{
 			select {
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
-					if service == "" && !restart {
-						container, err := docker.FindContainer(destinationContainerOrService)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						err = docker.CopyToContainer(event.Name, container, destinationPath)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, container, destinationPath)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						return
-					}
-
-					if service == "" && restart {
-						container, err := docker.FindContainer(destinationContainerOrService)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while finding container %s\n", destinationContainerOrService)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						err = docker.CopyToContainer(event.Name, container, destinationPath)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, container, destinationPath)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						fmt.Printf("Restarting container %s\n", container)
-						err = docker.RestartContainer(container)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while restarting %s\n", container)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						return
-					}
-
-					if service != "" && !restart {
-						container, err := docker.GetContainerIdForService(destinationContainerOrService)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while getting container ID for service %s\n", destinationContainerOrService)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						err = docker.CopyToContainer(event.Name, container, destinationPath)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while copying %s to %s:%s\n", event.Name, destinationContainerOrService, destinationPath)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						return
-					}
-
-					if service != "" && restart {
-						err = docker.CopyToContainer(event.Name, tempContainer, TemporaryContainerMountPath)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while copying %s to temporary container %s:%s\n", event.Name, tempContainer, TemporaryContainerMountPath)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
-
-						fmt.Printf("Restarting service %s\n", destinationContainerOrService)
-						err := docker.RestartService(service, volume, destinationPath)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error while restarting service %s\n", destinationContainerOrService)
-							fmt.Fprintln(os.Stderr, err)
-							return
-						}
+					err := dockerSyncer.Sync(absoluteSourcePath, event.Op)
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "Error:", err)
 					}
 				}
 			case err := <-fw.Errors:
@@ -187,8 +138,6 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-// Adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
