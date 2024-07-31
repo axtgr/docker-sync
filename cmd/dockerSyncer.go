@@ -99,12 +99,12 @@ func (ds *DockerSyncer) Connect() error {
 func (ds *DockerSyncer) Init() error {
 	err := ds.Connect()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to docker: %w", err)
 	}
 
 	service, err := ds.findService(ds.target)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to find service %s: %w", ds.target, err)
 	}
 
 	if service == "" {
@@ -116,8 +116,7 @@ func (ds *DockerSyncer) Init() error {
 	if ds.restartTarget && ds.targetType == Service {
 		err := ds.createTemporaryContainerWithVolume()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to create a temporary container with a volume: %w", err)
 		}
 	}
 
@@ -213,7 +212,7 @@ func (ds *DockerSyncer) findContainerById(needle string) (string, error) {
 		Filters: filters.NewArgs(filters.Arg("id", needle)),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list containers: %w", err)
 	}
 	if len(containers) == 0 {
 		return "", nil
@@ -226,7 +225,7 @@ func (ds *DockerSyncer) findContainerByName(needle string) (string, error) {
 		Filters: filters.NewArgs(filters.Arg("name", needle)),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list containers: %w", err)
 	}
 	if len(containers) == 0 {
 		return "", nil
@@ -237,12 +236,16 @@ func (ds *DockerSyncer) findContainerByName(needle string) (string, error) {
 func (ds *DockerSyncer) findContainer(idOrName string) (string, error) {
 	id, err := ds.findContainerById(idOrName)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to find container by ID or name %s: %w", idOrName, err)
 	}
 	if id != "" {
 		return id, nil
 	}
-	return ds.findContainerByName(idOrName)
+	containerId, err := ds.findContainerByName(idOrName)
+	if err != nil {
+		return "", fmt.Errorf("failed to find container by ID or name %s: %w", idOrName, err)
+	}
+	return containerId, nil
 }
 
 func (ds *DockerSyncer) findServiceById(needle string) (string, error) {
@@ -250,7 +253,7 @@ func (ds *DockerSyncer) findServiceById(needle string) (string, error) {
 		Filters: filters.NewArgs(filters.Arg("id", needle)),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list services: %w", err)
 	}
 	if len(services) == 0 {
 		return "", nil
@@ -263,7 +266,7 @@ func (ds *DockerSyncer) findServiceByName(needle string) (string, error) {
 		Filters: filters.NewArgs(filters.Arg("name", needle)),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list services: %w", err)
 	}
 	if len(services) == 0 {
 		return "", nil
@@ -274,7 +277,7 @@ func (ds *DockerSyncer) findServiceByName(needle string) (string, error) {
 func (ds *DockerSyncer) findService(idOrName string) (string, error) {
 	id, err := ds.findServiceById(idOrName)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to find service by ID or name %s: %w", idOrName, err)
 	}
 	if id != "" {
 		return id, nil
@@ -290,7 +293,7 @@ func (ds *DockerSyncer) getFirstRunningTaskForService(service string) (string, e
 		),
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list tasks: %w", err)
 	}
 	if len(tasks) == 0 {
 		return "", nil
@@ -301,7 +304,7 @@ func (ds *DockerSyncer) getFirstRunningTaskForService(service string) (string, e
 func (ds *DockerSyncer) getTaskContainerId(task string) (string, error) {
 	taskInfo, _, err := ds.client.TaskInspectWithRaw(context.Background(), task)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to inspect task %s: %w", task, err)
 	}
 	return taskInfo.Status.ContainerStatus.ContainerID, nil
 }
@@ -309,12 +312,16 @@ func (ds *DockerSyncer) getTaskContainerId(task string) (string, error) {
 func (ds *DockerSyncer) getContainerIdForService(service string) (string, error) {
 	task, err := ds.getFirstRunningTaskForService(service)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get first running task for service %s: %w", service, err)
 	}
 	if task == "" {
 		return "", nil
 	}
-	return ds.getTaskContainerId(task)
+	containerId, err := ds.getTaskContainerId(task)
+	if err != nil {
+		return "", fmt.Errorf("failed to get container ID for task %s: %w", task, err)
+	}
+	return containerId, nil
 }
 
 func (ds *DockerSyncer) restartContainer(containerId string) error {
@@ -325,7 +332,7 @@ func (ds *DockerSyncer) restartContainer(containerId string) error {
 func (ds *DockerSyncer) restartService(service string, mountSource string, mountTarget string) error {
 	serviceInfo, _, err := ds.client.ServiceInspectWithRaw(context.Background(), service, types.ServiceInspectOptions{})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to inspect service %s: %w", service, err)
 	}
 
 	spec := serviceInfo.Spec
@@ -347,7 +354,11 @@ func (ds *DockerSyncer) restartService(service string, mountSource string, mount
 	}
 
 	_, err = ds.client.ServiceUpdate(context.Background(), service, serviceInfo.Version, spec, types.ServiceUpdateOptions{})
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to update service %s: %w", service, err)
+	}
+
+	return nil
 }
 
 func (ds *DockerSyncer) copyToContainer(sourcePath, container, containerPath string) error {
@@ -394,7 +405,7 @@ func (ds *DockerSyncer) copyToContainer(sourcePath, container, containerPath str
 	if sourceInfo.IsDir() {
 		err = filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to walk path %s: %w", sourcePath, err)
 			}
 
 			relPath, err := filepath.Rel(sourcePath, path)
@@ -440,7 +451,7 @@ func (ds *DockerSyncer) createTemporaryContainerWithVolume() error {
 		},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create volume: %w", err)
 	}
 
 	ds.temporaryVolume = vol.Name
@@ -461,7 +472,7 @@ func (ds *DockerSyncer) createTemporaryContainerWithVolume() error {
 		},
 		nil, nil, makeTemporaryName())
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create container: %w", err)
 	}
 
 	ds.temporaryContainer = container.ID

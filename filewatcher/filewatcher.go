@@ -1,7 +1,7 @@
 package filewatcher
 
 import (
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,7 +29,7 @@ const (
 func NewFileWatcher() (*FileWatcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create a new watcher: %w", err)
 	}
 
 	fw := &FileWatcher{
@@ -106,12 +106,12 @@ func (fw *FileWatcher) processEvent(event fsnotify.Event) {
 func (fw *FileWatcher) AddWatch(path string) error {
 	return filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to walk path %s: %w", path, err)
 		}
 		if info.IsDir() {
 			err = fw.Watcher.Add(path)
 			if err != nil {
-				log.Printf("Error watching path %s: %v\n", path, err)
+				return fmt.Errorf("failed to add watch for path %s: %w", path, err)
 			}
 		}
 		return nil
