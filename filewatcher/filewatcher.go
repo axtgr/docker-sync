@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -41,6 +43,10 @@ func NewFileWatcher() (*FileWatcher, error) {
 }
 
 func (fw *FileWatcher) Watch() {
+	debounceInterval := 100 * time.Millisecond
+	debounceTimers := make(map[string]*time.Timer)
+	var mu sync.Mutex
+
 	for {
 		select {
 		case event, ok := <-fw.Watcher.Events:
@@ -48,34 +54,50 @@ func (fw *FileWatcher) Watch() {
 				return
 			}
 
-			// Remove events are reported on both dirs and files
-			if event.Has(Remove) {
-				fw.Events <- event
-				return
+			mu.Lock()
+			if timer, exists := debounceTimers[event.Name]; exists {
+				timer.Stop()
 			}
+			debounceTimers[event.Name] = time.AfterFunc(debounceInterval, func() {
+				fw.processEvent(event)
+				mu.Lock()
+				delete(debounceTimers, event.Name)
+				mu.Unlock()
+			})
+			mu.Unlock()
 
-			fileInfo, err := os.Stat(event.Name)
-			if err != nil {
-				fw.Errors <- err
-				return
-			}
-
-			// Events other than Remove are reported only on files
-			if fileInfo.IsDir() {
-				if event.Has(Create) {
-					fw.AddWatch(event.Name)
-				}
-			} else if event.Has(Create) || event.Has(Write) || event.Has(Rename) {
-				fw.Events <- event
-			}
 		case err, ok := <-fw.Watcher.Errors:
 			if !ok {
 				return
 			}
 			fw.Errors <- err
+
 		case <-fw.done:
 			return
 		}
+	}
+}
+
+func (fw *FileWatcher) processEvent(event fsnotify.Event) {
+	// Remove events are reported on both dirs and files
+	if event.Has(Remove) {
+		fw.Events <- event
+		return
+	}
+
+	fileInfo, err := os.Stat(event.Name)
+	if err != nil {
+		fw.Errors <- err
+		return
+	}
+
+	// Events other than Remove are reported only on files
+	if fileInfo.IsDir() {
+		if event.Has(Create) {
+			fw.AddWatch(event.Name)
+		}
+	} else if event.Has(Create) || event.Has(Write) || event.Has(Rename) {
+		fw.Events <- event
 	}
 }
 
