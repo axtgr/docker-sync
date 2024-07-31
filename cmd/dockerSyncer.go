@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/axtgr/docker-sync/filewatcher"
 	"github.com/docker/cli/cli/connhelper"
@@ -26,15 +25,11 @@ const (
 	AppIdentifier               = "docker-sync"
 	TemporaryContainerImage     = "hello-world"
 	TemporaryContainerMountPath = "/docker-sync-data"
-	DefaultRestartTimeout       = 10
+	stopTimeoutInSeconds        = 10
 )
 
 func makeTemporaryName() string {
 	return AppIdentifier + "-" + uuid.New().String()
-}
-
-func isTemporaryVolume(mount *mount.Mount) bool {
-	return strings.HasPrefix(mount.Source, AppIdentifier)
 }
 
 type TargetType int
@@ -102,15 +97,25 @@ func (ds *DockerSyncer) Init() error {
 		return fmt.Errorf("failed to connect to docker: %w", err)
 	}
 
-	service, err := ds.findService(ds.target)
+	service, err := ds.findTargetService()
 	if err != nil {
 		return fmt.Errorf("failed to find service %s: %w", ds.target, err)
 	}
 
 	if service == "" {
+		container, err := ds.findTargetContainer()
+		if err != nil {
+			return fmt.Errorf("failed to find container %s: %w", ds.target, err)
+		}
+		if container == "" {
+			return fmt.Errorf("failed to find container or service %s", ds.target)
+		}
+
 		ds.targetType = Container
+		ds.target = container
 	} else {
 		ds.targetType = Service
+		ds.target = service
 	}
 
 	if ds.restartTarget && ds.targetType == Service {
@@ -125,7 +130,7 @@ func (ds *DockerSyncer) Init() error {
 
 func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 	if ds.targetType == Container && !ds.restartTarget {
-		container, err := ds.findContainer(ds.target)
+		container, err := ds.findTargetContainer()
 		if err != nil {
 			return fmt.Errorf("failed to find container %s: %w", ds.target, err)
 		}
@@ -139,7 +144,7 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 	}
 
 	if ds.targetType == Container && ds.restartTarget {
-		container, err := ds.findContainer(ds.target)
+		container, err := ds.findTargetContainer()
 		if err != nil {
 			return fmt.Errorf("failed to find container %s: %w", ds.target, err)
 		}
@@ -149,7 +154,7 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 			return fmt.Errorf("failed to copy to container %s: %w", container, err)
 		}
 
-		err = ds.restartContainer(container)
+		err = ds.restartTargetContainer(true)
 		if err != nil {
 			return fmt.Errorf("failed to restart container %s: %w", container, err)
 		}
@@ -158,7 +163,7 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 	}
 
 	if ds.targetType == Service && !ds.restartTarget {
-		container, err := ds.getContainerIdForService(ds.target)
+		container, err := ds.getContainerIdForTargetService()
 		if err != nil {
 			return fmt.Errorf("failed to container ID for service %s: %w", ds.target, err)
 		}
@@ -177,7 +182,7 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 			return fmt.Errorf("failed to copy to temporary container %s: %w", ds.temporaryContainer, err)
 		}
 
-		err = ds.restartService(ds.target, ds.temporaryVolume, ds.targetPath)
+		err = ds.restartTargetService(true)
 		if err != nil {
 			return fmt.Errorf("failed to restart service %s: %w", ds.target, err)
 		}
@@ -188,6 +193,18 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 
 func (ds *DockerSyncer) Cleanup() error {
 	ctx := context.Background()
+
+	if ds.targetType == Container {
+		err := ds.restartTargetContainer(false)
+		if err != nil {
+			return fmt.Errorf("failed to restart target container %s: %w", ds.target, err)
+		}
+	} else {
+		err := ds.restartTargetService(false)
+		if err != nil {
+			return fmt.Errorf("failed to restart target service: %w", err)
+		}
+	}
 
 	err := ds.client.ContainerRemove(ctx, ds.temporaryContainer, container.RemoveOptions{
 		Force: true,
@@ -233,17 +250,17 @@ func (ds *DockerSyncer) findContainerByName(needle string) (string, error) {
 	return containers[0].ID, nil
 }
 
-func (ds *DockerSyncer) findContainer(idOrName string) (string, error) {
-	id, err := ds.findContainerById(idOrName)
+func (ds *DockerSyncer) findTargetContainer() (string, error) {
+	id, err := ds.findContainerById(ds.target)
 	if err != nil {
-		return "", fmt.Errorf("failed to find container by ID or name %s: %w", idOrName, err)
+		return "", fmt.Errorf("failed to find container by ID or name %s: %w", ds.target, err)
 	}
 	if id != "" {
 		return id, nil
 	}
-	containerId, err := ds.findContainerByName(idOrName)
+	containerId, err := ds.findContainerByName(ds.target)
 	if err != nil {
-		return "", fmt.Errorf("failed to find container by ID or name %s: %w", idOrName, err)
+		return "", fmt.Errorf("failed to find container by ID or name %s: %w", ds.target, err)
 	}
 	return containerId, nil
 }
@@ -274,21 +291,21 @@ func (ds *DockerSyncer) findServiceByName(needle string) (string, error) {
 	return services[0].ID, nil
 }
 
-func (ds *DockerSyncer) findService(idOrName string) (string, error) {
-	id, err := ds.findServiceById(idOrName)
+func (ds *DockerSyncer) findTargetService() (string, error) {
+	id, err := ds.findServiceById(ds.target)
 	if err != nil {
-		return "", fmt.Errorf("failed to find service by ID or name %s: %w", idOrName, err)
+		return "", fmt.Errorf("failed to find service by ID or name %s: %w", ds.target, err)
 	}
 	if id != "" {
 		return id, nil
 	}
-	return ds.findServiceByName(idOrName)
+	return ds.findServiceByName(ds.target)
 }
 
-func (ds *DockerSyncer) getFirstRunningTaskForService(service string) (string, error) {
+func (ds *DockerSyncer) getFirstRunningTaskForTargetService() (string, error) {
 	tasks, err := ds.client.TaskList(context.Background(), types.TaskListOptions{
 		Filters: filters.NewArgs(
-			filters.Arg("service", service),
+			filters.Arg("service", ds.target),
 			filters.Arg("desired-state", "running"),
 		),
 	})
@@ -309,10 +326,10 @@ func (ds *DockerSyncer) getTaskContainerId(task string) (string, error) {
 	return taskInfo.Status.ContainerStatus.ContainerID, nil
 }
 
-func (ds *DockerSyncer) getContainerIdForService(service string) (string, error) {
-	task, err := ds.getFirstRunningTaskForService(service)
+func (ds *DockerSyncer) getContainerIdForTargetService() (string, error) {
+	task, err := ds.getFirstRunningTaskForTargetService()
 	if err != nil {
-		return "", fmt.Errorf("failed to get first running task for service %s: %w", service, err)
+		return "", fmt.Errorf("failed to get first running task for service %s: %w", ds.target, err)
 	}
 	if task == "" {
 		return "", nil
@@ -324,38 +341,89 @@ func (ds *DockerSyncer) getContainerIdForService(service string) (string, error)
 	return containerId, nil
 }
 
-func (ds *DockerSyncer) restartContainer(containerId string) error {
-	timeout := DefaultRestartTimeout
-	return ds.client.ContainerRestart(context.Background(), containerId, container.StopOptions{Timeout: &timeout})
+func (ds *DockerSyncer) restartTargetContainer(mountTemporaryVolume bool) error {
+	ctx := context.Background()
+
+	containerInfo, err := ds.client.ContainerInspect(ctx, ds.target)
+	if err != nil {
+		return fmt.Errorf("failed to inspect container %s: %w", ds.target, err)
+	}
+
+	timeout := stopTimeoutInSeconds
+	err = ds.client.ContainerStop(ctx, ds.target, container.StopOptions{Timeout: &timeout})
+	if err != nil {
+		return fmt.Errorf("failed to stop container %s: %w", ds.target, err)
+	}
+
+	newConfig := containerInfo.Config
+	newHostConfig := containerInfo.HostConfig
+
+	mounts := []mount.Mount{}
+	for _, mount := range newHostConfig.Mounts {
+		if mount.Source != ds.temporaryVolume {
+			mounts = append(mounts, mount)
+		}
+	}
+
+	if mountTemporaryVolume {
+		newMount := mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: ds.temporaryVolume,
+			Target: ds.targetPath,
+		}
+		newHostConfig.Mounts = append(mounts, newMount)
+	} else {
+		newHostConfig.Mounts = mounts
+	}
+
+	resp, err := ds.client.ContainerCreate(ctx, newConfig, newHostConfig, nil, nil, "")
+	if err != nil {
+		return fmt.Errorf("failed to create new container: %w", err)
+	}
+
+	err = ds.client.ContainerRemove(ctx, ds.target, container.RemoveOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to remove old container %s: %w", ds.target, err)
+	}
+
+	err = ds.client.ContainerStart(ctx, resp.ID, container.StartOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to start new container: %w", err)
+	}
+
+	return nil
 }
 
-func (ds *DockerSyncer) restartService(service string, mountSource string, mountTarget string) error {
-	serviceInfo, _, err := ds.client.ServiceInspectWithRaw(context.Background(), service, types.ServiceInspectOptions{})
+func (ds *DockerSyncer) restartTargetService(mountTemporaryVolume bool) error {
+	serviceInfo, _, err := ds.client.ServiceInspectWithRaw(context.Background(), ds.target, types.ServiceInspectOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to inspect service %s: %w", service, err)
+		return fmt.Errorf("failed to inspect service %s: %w", ds.target, err)
 	}
 
 	spec := serviceInfo.Spec
 	spec.TaskTemplate.ForceUpdate++
 
-	if mountSource != "" {
-		newMount := mount.Mount{
-			Type:   mount.TypeVolume,
-			Source: mountSource,
-			Target: mountTarget,
+	mounts := []mount.Mount{}
+	for _, mount := range spec.TaskTemplate.ContainerSpec.Mounts {
+		if mount.Source != ds.temporaryVolume {
+			mounts = append(mounts, mount)
 		}
-		mounts := []mount.Mount{}
-		for _, mount := range spec.TaskTemplate.ContainerSpec.Mounts {
-			if !isTemporaryVolume(&mount) {
-				mounts = append(mounts, mount)
-			}
-		}
-		spec.TaskTemplate.ContainerSpec.Mounts = append(mounts, newMount)
 	}
 
-	_, err = ds.client.ServiceUpdate(context.Background(), service, serviceInfo.Version, spec, types.ServiceUpdateOptions{})
+	if mountTemporaryVolume {
+		newMount := mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: ds.temporaryVolume,
+			Target: ds.targetPath,
+		}
+		spec.TaskTemplate.ContainerSpec.Mounts = append(mounts, newMount)
+	} else {
+		spec.TaskTemplate.ContainerSpec.Mounts = mounts
+	}
+
+	_, err = ds.client.ServiceUpdate(context.Background(), ds.target, serviceInfo.Version, spec, types.ServiceUpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to update service %s: %w", service, err)
+		return fmt.Errorf("failed to update service %s: %w", ds.target, err)
 	}
 
 	return nil
