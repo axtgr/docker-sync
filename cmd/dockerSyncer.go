@@ -404,8 +404,11 @@ func (ds *DockerSyncer) restartTargetService(mountTemporaryVolume bool) error {
 	spec.TaskTemplate.ForceUpdate++
 
 	mounts := []mount.Mount{}
+	hadTempVolume := false
 	for _, mount := range spec.TaskTemplate.ContainerSpec.Mounts {
-		if mount.Source != ds.temporaryVolume {
+		if mount.Source == ds.temporaryVolume {
+			hadTempVolume = true
+		} else {
 			mounts = append(mounts, mount)
 		}
 	}
@@ -421,9 +424,20 @@ func (ds *DockerSyncer) restartTargetService(mountTemporaryVolume bool) error {
 		spec.TaskTemplate.ContainerSpec.Mounts = mounts
 	}
 
+	containerId := ""
+	if hadTempVolume {
+		containerId, _ = ds.getContainerIdForTargetService()
+	}
+
 	_, err = ds.client.ServiceUpdate(context.Background(), ds.target, serviceInfo.Version, spec, types.ServiceUpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to update service %s: %w", ds.target, err)
+	}
+
+	if hadTempVolume && containerId != "" {
+		ds.client.ContainerRemove(context.Background(), containerId, container.RemoveOptions{
+			Force: true,
+		})
 	}
 
 	return nil
