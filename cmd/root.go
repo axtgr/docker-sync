@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/axtgr/docker-sync/filewatcher"
 	"github.com/spf13/cobra"
@@ -51,6 +53,16 @@ var rootCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
+		defer docker.Cleanup()
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+		go func() {
+			<-c
+			docker.Cleanup()
+			os.Exit(0)
+		}()
 
 		service, err := docker.FindService(destinationContainerOrService)
 		if err != nil {

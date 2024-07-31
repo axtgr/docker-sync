@@ -374,3 +374,33 @@ func (dm *DockerManager) CreateTemporaryContainerWithVolume() (string, string, e
 
 	return container.ID, vol.Name, nil
 }
+
+func (dm *DockerManager) Cleanup() error {
+	ctx := context.Background()
+
+
+
+	fmt.Printf("Removing temporary containers")
+	for _, containerID := range dm.temporaryContainers {
+		err := dm.client.ContainerRemove(ctx, containerID, container.RemoveOptions{
+			Force: true,
+		})
+		if err != nil {
+			fmt.Printf("Error removing container %s: %v\n", containerID, err)
+		}
+	}
+
+	fmt.Printf("Removing temporary volumes")
+	for _, volumeName := range dm.temporaryVolumes {
+		fmt.Printf("Removing volume: %s\n", volumeName)
+		err := dm.client.VolumeRemove(ctx, volumeName, true)
+		if err != nil {
+			fmt.Printf("Error removing volume %s: %v\n", volumeName, err)
+		}
+	}
+
+	dm.temporaryContainers = nil
+	dm.temporaryVolumes = nil
+
+	return nil
+}
