@@ -382,10 +382,11 @@ func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error
 		newHostConfig.Mounts = mounts
 	}
 
-	resp, err := ds.client.ContainerCreate(ctx, newConfig, newHostConfig, nil, nil, "")
+	newTarget, err := ds.client.ContainerCreate(ctx, newConfig, newHostConfig, nil, nil, "")
 	if err != nil {
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
+	ds.target = newTarget.ID
 
 	ds.logger.Println("Removing the old container...", ds.target)
 	err = ds.client.ContainerRemove(ctx, ds.target, container.RemoveOptions{})
@@ -394,7 +395,7 @@ func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error
 	}
 
 	ds.logger.Println("Starting the new container...", ds.target)
-	err = ds.client.ContainerStart(ctx, resp.ID, container.StartOptions{})
+	err = ds.client.ContainerStart(ctx, newTarget.ID, container.StartOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to start new container: %w", err)
 	}
