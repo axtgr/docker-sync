@@ -16,6 +16,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	ColorReset = "\033[0m"
+	ColorBlue  = "\033[34m"
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "docker-sync <source> <destination>",
 	Short: "Sync files with a remote Docker container/service",
@@ -144,7 +149,7 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Printf("Syncing %s to %s...\n", absoluteSourcePath, destination)
+		fmt.Printf("Syncing %s%s%s to %s%s%s\n", ColorBlue, absoluteSourcePath, ColorReset, ColorBlue, destination, ColorReset)
 
 		for {
 			select {
