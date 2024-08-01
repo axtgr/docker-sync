@@ -107,6 +107,7 @@ var rootCmd = &cobra.Command{
 			RestartTarget: restart,
 			Host:          dockerHost,
 			Logger:        verboseLogger,
+			Identifier:    "docker-sync",
 		})
 
 		if err != nil {

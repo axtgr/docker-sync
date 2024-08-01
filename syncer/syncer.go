@@ -23,15 +23,9 @@ import (
 )
 
 const (
-	AppIdentifier               = "docker-sync"
-	TemporaryContainerImage     = "hello-world"
-	TemporaryContainerMountPath = "/docker-sync-data"
-	stopTimeoutInSeconds        = 10
+	TemporaryContainerImage = "hello-world"
+	stopTimeoutInSeconds    = 10
 )
-
-func makeTemporaryName() string {
-	return AppIdentifier + "-" + uuid.New().String()
-}
 
 type TargetType int
 
@@ -50,6 +44,7 @@ type Syncer struct {
 	temporaryContainer string
 	temporaryVolume    string
 	logger             *log.Logger
+	identifier         string
 }
 
 type Options struct {
@@ -58,6 +53,7 @@ type Options struct {
 	RestartTarget bool
 	Host          string
 	Logger        *log.Logger
+	Identifier    string
 }
 
 func New(options Options) (*Syncer, error) {
@@ -67,7 +63,16 @@ func New(options Options) (*Syncer, error) {
 		targetPath:    options.TargetPath,
 		restartTarget: options.RestartTarget,
 		logger:        options.Logger,
+		identifier:    options.Identifier,
 	}, nil
+}
+
+func (syncer *Syncer) generateTemporaryName() string {
+	return syncer.identifier + "-" + uuid.New().String()
+}
+
+func (syncer *Syncer) getTemporaryVolumePath() string {
+	return "/" + syncer.identifier + "-data"
 }
 
 func (syncer *Syncer) Connect() error {
@@ -176,7 +181,7 @@ func (syncer *Syncer) Copy(localPath string, op filewatcher.Op) error {
 			return fmt.Errorf("failed to copy to container %s: %w", container, err)
 		}
 	} else if syncer.targetType == Service && syncer.restartTarget {
-		err := syncer.copyToContainer(localPath, syncer.temporaryContainer, TemporaryContainerMountPath)
+		err := syncer.copyToContainer(localPath, syncer.temporaryContainer, syncer.getTemporaryVolumePath())
 		if err != nil {
 			return fmt.Errorf("failed to copy to temporary container %s: %w", syncer.temporaryContainer, err)
 		}
@@ -538,12 +543,12 @@ func (syncer *Syncer) copyToContainer(sourcePath, container, containerPath strin
 }
 
 func (syncer *Syncer) createTemporaryContainerWithVolume() error {
-	volumeName := makeTemporaryName()
+	volumeName := syncer.generateTemporaryName()
 	syncer.logger.Printf("Creating temporary volume %s...\n", volumeName)
 	vol, err := syncer.client.VolumeCreate(context.Background(), volume.CreateOptions{
 		Name: volumeName,
 		Labels: map[string]string{
-			AppIdentifier: "true",
+			syncer.identifier: "true",
 		},
 	})
 	if err != nil {
@@ -552,7 +557,7 @@ func (syncer *Syncer) createTemporaryContainerWithVolume() error {
 
 	syncer.temporaryVolume = vol.Name
 
-	containerName := makeTemporaryName()
+	containerName := syncer.generateTemporaryName()
 	syncer.logger.Printf("Creating temporary container %s...\n", containerName)
 	container, err := syncer.client.ContainerCreate(context.Background(),
 		&container.Config{
@@ -563,7 +568,7 @@ func (syncer *Syncer) createTemporaryContainerWithVolume() error {
 				{
 					Type:   mount.TypeVolume,
 					Source: vol.Name,
-					Target: TemporaryContainerMountPath,
+					Target: syncer.getTemporaryVolumePath(),
 				},
 			},
 			AutoRemove: true,
