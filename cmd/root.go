@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -18,11 +19,9 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "docker-sync <source> <destination>",
 	Short: "Sync files with a remote Docker container/service",
-	Long:  "Watch a local directory and sync it with a remote Docker container or service using `docker cp`",
+	Long:  "Watch a local directory and sync its contents with a remote Docker container or service",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		logger := log.New(os.Stdout, "", 0)
-
 		absoluteSourcePath, err := filepath.Abs(args[0])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -39,6 +38,19 @@ var rootCmd = &cobra.Command{
 
 		destinationTarget := destinationSegments[0]
 		destinationPath := destinationSegments[1]
+
+		verbose, err := cmd.Flags().GetBool("verbose")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+
+		var verboseLogger *log.Logger
+		if verbose {
+			verboseLogger = log.New(os.Stdout, "", 0)
+		} else {
+			verboseLogger = log.New(io.Discard, "", 0)
+		}
 
 		restart, err := cmd.Flags().GetBool("restart")
 		if err != nil {
@@ -88,7 +100,7 @@ var rootCmd = &cobra.Command{
 			targetPath:    destinationPath,
 			restartTarget: restart,
 			host:          dockerHost,
-			logger:        logger,
+			logger:        verboseLogger,
 		})
 
 		if err != nil {
@@ -132,13 +144,15 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Printf("Syncing %s to %s\n", absoluteSourcePath, destination)
+		fmt.Printf("Syncing %s to %s...\n", absoluteSourcePath, destination)
 
 		for {
 			select {
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
+					fmt.Printf("Copying %s to %s...\n", event.Name, destinationPath)
 					err := dockerSyncer.Copy(event.Name, event.Op)
+					fmt.Printf("Copied %s to %s\n", event.Name, destinationPath)
 					if err != nil {
 						fmt.Fprintln(os.Stderr, "Error:", err)
 					}
@@ -159,5 +173,6 @@ func Execute() {
 
 func init() {
 	rootCmd.Flags().BoolP("restart", "r", false, "Restart container/service on changes")
+	rootCmd.Flags().Bool("verbose", false, "Log every interaction with Docker")
 	rootCmd.Flags().StringP("host", "H", "", "Docker host to use")
 }

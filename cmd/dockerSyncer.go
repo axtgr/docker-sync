@@ -140,8 +140,6 @@ func (ds *DockerSyncer) Init() error {
 }
 
 func (ds *DockerSyncer) Copy(localPath string, op filewatcher.Op) error {
-	ds.logger.Printf("Copying %s to %s...", localPath, ds.target)
-
 	if ds.targetType == Container && !ds.restartTarget {
 		container, err := ds.findTargetContainer()
 		if err != nil {
@@ -188,8 +186,6 @@ func (ds *DockerSyncer) Copy(localPath string, op filewatcher.Op) error {
 			return fmt.Errorf("failed to restart service %s: %w", ds.target, err)
 		}
 	}
-
-	ds.logger.Printf("Finished copying %s to %s", localPath, ds.target)
 
 	return nil
 }
@@ -356,6 +352,7 @@ func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error
 		return fmt.Errorf("failed to inspect container %s: %w", ds.target, err)
 	}
 
+	ds.logger.Printf("Stopping container %s...", ds.target)
 	timeout := stopTimeoutInSeconds
 	err = ds.client.ContainerStop(ctx, ds.target, container.StopOptions{Timeout: &timeout})
 	if err != nil {
@@ -373,6 +370,7 @@ func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error
 	}
 
 	if mountTemporaryVolume {
+		ds.logger.Println("Creating a container with a temporary volume...")
 		newMount := mount.Mount{
 			Type:   mount.TypeVolume,
 			Source: ds.temporaryVolume,
@@ -380,6 +378,7 @@ func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error
 		}
 		newHostConfig.Mounts = append(mounts, newMount)
 	} else {
+		ds.logger.Println("Creating a container without temporary volumes...")
 		newHostConfig.Mounts = mounts
 	}
 
@@ -388,11 +387,13 @@ func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error
 		return fmt.Errorf("failed to create new container: %w", err)
 	}
 
+	ds.logger.Println("Removing the old container...", ds.target)
 	err = ds.client.ContainerRemove(ctx, ds.target, container.RemoveOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to remove old container %s: %w", ds.target, err)
 	}
 
+	ds.logger.Println("Starting the new container...", ds.target)
 	err = ds.client.ContainerStart(ctx, resp.ID, container.StartOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to start new container: %w", err)
@@ -421,6 +422,7 @@ func (ds *DockerSyncer) updateTargetService(mountTemporaryVolume bool) error {
 	}
 
 	if mountTemporaryVolume {
+		ds.logger.Printf("Updating service %s with temporary volume...\n", ds.target)
 		newMount := mount.Mount{
 			Type:   mount.TypeVolume,
 			Source: ds.temporaryVolume,
@@ -428,6 +430,7 @@ func (ds *DockerSyncer) updateTargetService(mountTemporaryVolume bool) error {
 		}
 		spec.TaskTemplate.ContainerSpec.Mounts = append(mounts, newMount)
 	} else {
+		ds.logger.Printf("Updating service %s without temporary volume...\n", ds.target)
 		spec.TaskTemplate.ContainerSpec.Mounts = mounts
 	}
 
@@ -442,6 +445,7 @@ func (ds *DockerSyncer) updateTargetService(mountTemporaryVolume bool) error {
 	}
 
 	if hadTempVolume && containerId != "" {
+		ds.logger.Printf("Removing old container %s for service %s...\n", containerId, ds.target)
 		ds.client.ContainerRemove(context.Background(), containerId, container.RemoveOptions{
 			Force: true,
 		})
@@ -533,8 +537,10 @@ func (ds *DockerSyncer) copyToContainer(sourcePath, container, containerPath str
 }
 
 func (ds *DockerSyncer) createTemporaryContainerWithVolume() error {
+	volumeName := makeTemporaryName()
+	ds.logger.Printf("Creating temporary volume %s...\n", volumeName)
 	vol, err := ds.client.VolumeCreate(context.Background(), volume.CreateOptions{
-		Name: makeTemporaryName(),
+		Name: volumeName,
 		Labels: map[string]string{
 			AppIdentifier: "true",
 		},
@@ -545,6 +551,8 @@ func (ds *DockerSyncer) createTemporaryContainerWithVolume() error {
 
 	ds.temporaryVolume = vol.Name
 
+	containerName := makeTemporaryName()
+	ds.logger.Printf("Creating temporary container %s...\n", containerName)
 	container, err := ds.client.ContainerCreate(context.Background(),
 		&container.Config{
 			Image: TemporaryContainerImage,
@@ -559,7 +567,7 @@ func (ds *DockerSyncer) createTemporaryContainerWithVolume() error {
 			},
 			AutoRemove: true,
 		},
-		nil, nil, makeTemporaryName())
+		nil, nil, containerName)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %w", err)
 	}
