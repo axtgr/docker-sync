@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/axtgr/docker-sync/filewatcher"
+	"github.com/axtgr/docker-sync/syncer"
 	"github.com/spf13/cobra"
 )
 
@@ -100,12 +101,12 @@ var rootCmd = &cobra.Command{
 			dockerHost = contextInfo[0].Endpoints.Docker.Host
 		}
 
-		dockerSyncer, err := NewDockerSyncer(DockerSyncerOptions{
-			target:        destinationTarget,
-			targetPath:    destinationPath,
-			restartTarget: restart,
-			host:          dockerHost,
-			logger:        verboseLogger,
+		dockerSyncer, err := syncer.New(syncer.Options{
+			Target:        destinationTarget,
+			TargetPath:    destinationPath,
+			RestartTarget: restart,
+			Host:          dockerHost,
+			Logger:        verboseLogger,
 		})
 
 		if err != nil {
