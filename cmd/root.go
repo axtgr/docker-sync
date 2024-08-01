@@ -138,7 +138,7 @@ var rootCmd = &cobra.Command{
 			select {
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
-					err := dockerSyncer.Copy(absoluteSourcePath, event.Op)
+					err := dockerSyncer.Copy(event.Name, event.Op)
 					if err != nil {
 						fmt.Fprintln(os.Stderr, "Error:", err)
 					}
