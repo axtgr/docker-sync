@@ -214,6 +214,7 @@ func (syncer *Syncer) Cleanup() error {
 		}
 	}
 
+	syncer.logger.Printf("Removing temporary container %s...", syncer.temporaryContainer)
 	err := syncer.client.ContainerRemove(ctx, syncer.temporaryContainer, container.RemoveOptions{
 		Force: true,
 	})
@@ -221,6 +222,7 @@ func (syncer *Syncer) Cleanup() error {
 		return fmt.Errorf("failed to remove temporary container %s: %w", syncer.temporaryContainer, err)
 	}
 
+	syncer.logger.Printf("Removing temporary volume %s...", syncer.temporaryVolume)
 	err = syncer.client.VolumeRemove(ctx, syncer.temporaryVolume, true)
 	if err != nil {
 		return fmt.Errorf("failed to remove temporary volume %s: %w", syncer.temporaryVolume, err)
