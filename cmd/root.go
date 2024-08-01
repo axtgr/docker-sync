@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,8 +21,9 @@ var rootCmd = &cobra.Command{
 	Long:  "Watch a local directory and sync it with a remote Docker container or service using `docker cp`",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		absoluteSourcePath, err := filepath.Abs(args[0])
+		logger := log.New(os.Stdout, "", 0)
 
+		absoluteSourcePath, err := filepath.Abs(args[0])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
@@ -81,7 +83,14 @@ var rootCmd = &cobra.Command{
 			dockerHost = contextInfo[0].Endpoints.Docker.Host
 		}
 
-		dockerSyncer, err := NewDockerSyncer(destinationTarget, destinationPath, restart, dockerHost)
+		dockerSyncer, err := NewDockerSyncer(DockerSyncerOptions{
+			target:        destinationTarget,
+			targetPath:    destinationPath,
+			restartTarget: restart,
+			host:          dockerHost,
+			logger:        logger,
+		})
+
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
@@ -103,7 +112,10 @@ var rootCmd = &cobra.Command{
 
 		go func() {
 			<-signals
-			dockerSyncer.Cleanup()
+			err := dockerSyncer.Cleanup()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error while cleaning up:", err)
+			}
 			os.Exit(0)
 		}()
 
@@ -126,7 +138,7 @@ var rootCmd = &cobra.Command{
 			select {
 			case event := <-fw.Events:
 				if event.Has(filewatcher.Create) || event.Has(filewatcher.Write) {
-					err := dockerSyncer.Sync(absoluteSourcePath, event.Op)
+					err := dockerSyncer.Copy(absoluteSourcePath, event.Op)
 					if err != nil {
 						fmt.Fprintln(os.Stderr, "Error:", err)
 					}

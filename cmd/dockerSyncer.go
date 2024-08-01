@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,14 +49,24 @@ type DockerSyncer struct {
 	restartTarget      bool
 	temporaryContainer string
 	temporaryVolume    string
+	logger             *log.Logger
 }
 
-func NewDockerSyncer(target string, targetPath string, restartTarget bool, host string) (*DockerSyncer, error) {
+type DockerSyncerOptions struct {
+	target        string
+	targetPath    string
+	restartTarget bool
+	host          string
+	logger        *log.Logger
+}
+
+func NewDockerSyncer(options DockerSyncerOptions) (*DockerSyncer, error) {
 	return &DockerSyncer{
-		host:          host,
-		target:        target,
-		targetPath:    targetPath,
-		restartTarget: restartTarget,
+		host:          options.host,
+		target:        options.target,
+		targetPath:    options.targetPath,
+		restartTarget: options.restartTarget,
+		logger:        options.logger,
 	}, nil
 }
 
@@ -128,7 +139,9 @@ func (ds *DockerSyncer) Init() error {
 	return nil
 }
 
-func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
+func (ds *DockerSyncer) Copy(localPath string, op filewatcher.Op) error {
+	ds.logger.Printf("Copying %s to %s...", localPath, ds.target)
+
 	if ds.targetType == Container && !ds.restartTarget {
 		container, err := ds.findTargetContainer()
 		if err != nil {
@@ -139,11 +152,7 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 		if err != nil {
 			return fmt.Errorf("failed to copy to container %s: %w", container, err)
 		}
-
-		return nil
-	}
-
-	if ds.targetType == Container && ds.restartTarget {
+	} else if ds.targetType == Container && ds.restartTarget {
 		container, err := ds.findTargetContainer()
 		if err != nil {
 			return fmt.Errorf("failed to find container %s: %w", ds.target, err)
@@ -154,15 +163,11 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 			return fmt.Errorf("failed to copy to container %s: %w", container, err)
 		}
 
-		err = ds.restartTargetContainer(true)
+		err = ds.recreateTargetContainer(true)
 		if err != nil {
 			return fmt.Errorf("failed to restart container %s: %w", container, err)
 		}
-
-		return nil
-	}
-
-	if ds.targetType == Service && !ds.restartTarget {
+	} else if ds.targetType == Service && !ds.restartTarget {
 		container, err := ds.getContainerIdForTargetService()
 		if err != nil {
 			return fmt.Errorf("failed to container ID for service %s: %w", ds.target, err)
@@ -172,35 +177,37 @@ func (ds *DockerSyncer) Sync(localPath string, op filewatcher.Op) error {
 		if err != nil {
 			return fmt.Errorf("failed to copy to container %s: %w", container, err)
 		}
-
-		return nil
-	}
-
-	if ds.targetType == Service && ds.restartTarget {
+	} else if ds.targetType == Service && ds.restartTarget {
 		err := ds.copyToContainer(localPath, ds.temporaryContainer, TemporaryContainerMountPath)
 		if err != nil {
 			return fmt.Errorf("failed to copy to temporary container %s: %w", ds.temporaryContainer, err)
 		}
 
-		err = ds.restartTargetService(true)
+		err = ds.updateTargetService(true)
 		if err != nil {
 			return fmt.Errorf("failed to restart service %s: %w", ds.target, err)
 		}
 	}
 
+	ds.logger.Printf("Finished copying %s to %s", localPath, ds.target)
+
 	return nil
 }
 
 func (ds *DockerSyncer) Cleanup() error {
+	ds.logger.Println("Cleaning up...")
+
 	ctx := context.Background()
 
 	if ds.targetType == Container {
-		err := ds.restartTargetContainer(false)
+		ds.logger.Printf("Recreating container %s...", ds.target)
+		err := ds.recreateTargetContainer(false)
 		if err != nil {
 			return fmt.Errorf("failed to restart target container %s: %w", ds.target, err)
 		}
 	} else {
-		err := ds.restartTargetService(false)
+		ds.logger.Printf("Updating service %s...", ds.target)
+		err := ds.updateTargetService(false)
 		if err != nil {
 			return fmt.Errorf("failed to restart target service: %w", err)
 		}
@@ -341,7 +348,7 @@ func (ds *DockerSyncer) getContainerIdForTargetService() (string, error) {
 	return containerId, nil
 }
 
-func (ds *DockerSyncer) restartTargetContainer(mountTemporaryVolume bool) error {
+func (ds *DockerSyncer) recreateTargetContainer(mountTemporaryVolume bool) error {
 	ctx := context.Background()
 
 	containerInfo, err := ds.client.ContainerInspect(ctx, ds.target)
@@ -394,7 +401,7 @@ func (ds *DockerSyncer) restartTargetContainer(mountTemporaryVolume bool) error 
 	return nil
 }
 
-func (ds *DockerSyncer) restartTargetService(mountTemporaryVolume bool) error {
+func (ds *DockerSyncer) updateTargetService(mountTemporaryVolume bool) error {
 	serviceInfo, _, err := ds.client.ServiceInspectWithRaw(context.Background(), ds.target, types.ServiceInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to inspect service %s: %w", ds.target, err)
